@@ -1,0 +1,13 @@
+version: "3.9"
+
+services:
+  discord-bot:
+    container_name: discord_bot
+    build: .
+    restart: unless-stopped
+    environment:
+      TIMEZONE: "Europe/Rome"
+      TOKEN: "MTQ2MjkzNjU3MjYxMjg0MTY3Mg.GYXHRv.PL8fg5ZNNNY4n8Sth3Nok3xzaWyQAD51BbQHvQ"
+      SOURCE_CHANNEL_ID: "808997837014302750"
+      TARGET_CHANNEL_ID: "1463307327787499530"
+      ROLE_ID: "623996167990280213"
