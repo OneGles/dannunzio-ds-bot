@@ -29,7 +29,6 @@ ROLE_ID = require_int_env("ROLE_ID")
 MAX_UPLOAD_SIZE = 8 * 1024 * 1024
 cached_messages = []
 
-# timezone for scheduled tasks (IANA name, e.g. 'UTC' or 'Europe/Rome')
 TIMEZONE = os.getenv("TIMEZONE", "UTC")
 TZ = ZoneInfo(TIMEZONE)
 
@@ -39,12 +38,10 @@ intents.message_content = True
 
 client = discord.Client(intents=intents)
 
-# carica tutte le perle in array
+# =========================
+# LOAD MESSAGES
+# =========================
 async def load_messages():
-    """
-    Carica tutti i messaggi dal canale SOURCE_CHANNEL_ID,
-    compresi testo e attachment.
-    """
     global cached_messages
 
     source_channel = client.get_channel(SOURCE_CHANNEL_ID)
@@ -62,14 +59,7 @@ async def load_messages():
     async for msg in source_channel.history(limit=None, oldest_first=True):
         total_fetched += 1
 
-        if msg.content.strip():
-            cached_messages.append({
-                "type": "text",
-                "content": msg.content,
-                "attachments": [],
-                "jump_url": msg.jump_url
-            })
-
+        valid_attachments = []
         if msg.attachments:
             valid_attachments = [
                 {
@@ -81,12 +71,15 @@ async def load_messages():
                 if a.filename.lower().endswith(VALID_EXTS)
             ]
 
-            if valid_attachments:
-                cached_messages.append({
-                    "type": "attachment",
-                    "jump_url": msg.jump_url,
-                    "attachments": valid_attachments
-                })
+        # scarta solo messaggi completamente vuoti
+        if not msg.content.strip() and not valid_attachments:
+            continue
+
+        cached_messages.append({
+            "content": msg.content.strip(),
+            "attachments": valid_attachments,
+            "jump_url": msg.jump_url
+        })
 
         if total_fetched % 100 == 0:
             print(f"Messaggi processati finora: {total_fetched}")
@@ -94,7 +87,9 @@ async def load_messages():
 
     print(f"Caricamento completato. Totale messaggi validi: {len(cached_messages)}")
 
-# invio messaggio
+# =========================
+# DAILY POST
+# =========================
 @tasks.loop(time=time(hour=21, minute=31, second=0, tzinfo=TZ))
 async def daily_post():
     if not cached_messages:
@@ -111,48 +106,44 @@ async def daily_post():
     role_mention = f"<@&{ROLE_ID}>"
     source_link = f"\n\nMessaggio originale:\n{item['jump_url']}"
 
-    if item["type"] == "text":
+    files = []
+    total_size = sum(a["size"] for a in item["attachments"])
+
+    # scarica allegati se presenti e uploadabili
+    if item["attachments"] and total_size <= MAX_UPLOAD_SIZE:
+        async with aiohttp.ClientSession() as session:
+            for a in item["attachments"]:
+                async with session.get(a["url"]) as resp:
+                    if resp.status != 200:
+                        print(f"Errore download {a['url']}")
+                        continue
+
+                    data = await resp.read()
+                    files.append(
+                        discord.File(
+                            io.BytesIO(data),
+                            filename=a["filename"]
+                        )
+                    )
+
+    # costruzione contenuto
+    content = f"{role_mention}"
+    if item["content"]:
+        content += f"\n{item['content']}"
+    content += source_link
+
+    # invio
+    if files:
         await target_channel.send(
-            content=f"{role_mention}\n{item['content']}{source_link}",
+            content=content,
+            files=files,
             allowed_mentions=AllowedMentions(roles=True)
         )
-
-    elif item["type"] == "attachment":
-        attachments = item["attachments"]
-        total_size = sum(a["size"] for a in attachments)
-
-        # upload possibile
-        if total_size <= MAX_UPLOAD_SIZE:
-            files = []
-
-            async with aiohttp.ClientSession() as session:
-                for a in attachments:
-                    async with session.get(a["url"]) as resp:
-                        if resp.status != 200:
-                            print(f"Errore download {a['url']}")
-                            continue
-
-                        data = await resp.read()
-                        files.append(
-                            discord.File(
-                                io.BytesIO(data),
-                                filename=a["filename"]
-                            )
-                        )
-
-            await target_channel.send(
-                files=files,
-                content=f"{role_mention}{source_link}",
-                allowed_mentions=AllowedMentions(roles=True)
-            )
-
-        # troppo grandi → URL
-        else:
-            urls = "\n".join(a["url"] for a in attachments)
-            await target_channel.send(
-                content=f"{role_mention}\n{urls}{source_link}",
-                allowed_mentions=AllowedMentions(roles=True)
-            )
+    else:
+        await target_channel.send(
+            content=content,
+            allowed_mentions=AllowedMentions(roles=True)
+        )
 
     print("Posted daily message")
 
