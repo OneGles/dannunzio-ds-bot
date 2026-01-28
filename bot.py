@@ -154,3 +154,4 @@ async def on_ready():
     daily_post.start()
 
 client.run(TOKEN)
+
